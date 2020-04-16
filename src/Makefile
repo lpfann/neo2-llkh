@@ -1,4 +1,4 @@
-GET=i386-mingw32- #for mac
+#TARGET=i386-mingw32- #for mac
 CC=$(TARGET)gcc
 LD=$(TARGET)gcc
 WINDRES=$(TARGET)windres
