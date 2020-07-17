@@ -12,18 +12,32 @@
 #include <stdbool.h>
 #include "trayicon.h"
 #include "resources.h"
+#include <io.h>
 
 HHOOK keyhook = NULL;
 #define APPNAME "neo-llkh"
 #define LEN 103
+#define SCANCODE_TAB_KEY 15
+#define SCANCODE_CAPSLOCK_KEY 58
+#define SCANCODE_LOWER_THAN_KEY 86 // <
+#define SCANCODE_QUOTE_KEY 40      // Ä
+#define SCANCODE_HASH_KEY 43       // #
+#define SCANCODE_RETURN_KEY 28
+// #define SCANCODE_ANY_ALT_KEY 56        // Alt or AltGr
 
 /**
  * Some global settings.
  * These values can be set in a configuration file (settings.ini)
  */
 char layout[100];                    // keyboard layout (default: neo)
+bool debugWindow = false;            // show debug output in a separate console window
 bool quoteAsMod3R = false;           // use quote/ä as right level 3 modifier
-int scanCodeMod3R = 43;              // this scan code depends on quoteAsMod3R
+bool returnAsMod3R = false;          // use return as right level 3 modifier
+bool tabAsMod4L = false;             // use tab as left level 4 modifier
+DWORD scanCodeMod3L = SCANCODE_CAPSLOCK_KEY;
+DWORD scanCodeMod3R = SCANCODE_HASH_KEY;       // depends on quoteAsMod3R and returnAsMod3R
+DWORD scanCodeMod4L = SCANCODE_LOWER_THAN_KEY; // depends on tabAsMod4L
+// DWORD scanCodeMod4R = SCANCODE_ANY_ALT_KEY;
 bool capsLockEnabled = false;        // enable (allow) caps lock
 bool shiftLockEnabled = false;       // enable (allow) shift lock (disabled if capsLockEnabled is true)
 bool level4LockEnabled = false;      // enable (allow) level 4 lock (toggle by pressing both Mod4 keys at the same time)
@@ -32,6 +46,8 @@ bool swapLeftCtrlAndLeftAlt = false; // swap left Ctrl and left Alt key
 bool swapLeftCtrlLeftAltAndLeftWin = false;  // swap left Ctrl, left Alt key and left Win key. Resulting order: Win, Alt, Ctrl (on a standard Windows keyboard)
 bool supportLevels5and6 = false;     // support levels five and six (greek letters and mathematical symbols)
 bool capsLockAsEscape = false;       // if true, hitting CapsLock alone sends Esc
+bool mod3RAsReturn = false;          // if true, hitting Mod3R alone sends Return
+bool mod4LAsTab = false;             // if true, hitting Mod4L alone sends Tab
 
 /**
  * True if no mapping should be done
@@ -50,6 +66,8 @@ bool capsLockActive = false;
 bool level3modLeftPressed = false;
 bool level3modRightPressed = false;
 bool level3modLeftAndNoOtherKeyPressed = false;
+bool level3modRightAndNoOtherKeyPressed = false;
+bool level4modLeftAndNoOtherKeyPressed = false;
 
 bool level4modLeftPressed = false;
 bool level4modRightPressed = false;
@@ -72,6 +90,28 @@ TCHAR mappingTableLevel4[LEN];
 TCHAR mappingTableLevel5[LEN];
 TCHAR mappingTableLevel6[LEN];
 
+
+void SetStdOutToNewConsole()
+{
+	// allocate a console for this app
+	AllocConsole();
+	// redirect unbuffered STDOUT to the console
+	HANDLE consoleHandle = GetStdHandle(STD_OUTPUT_HANDLE);
+	int fileDescriptor = _open_osfhandle((intptr_t)consoleHandle, _A_SYSTEM);
+	FILE *fp = _fdopen(fileDescriptor, "w");
+	*stdout = *fp;
+	setvbuf(stdout, NULL, _IONBF, 0);
+	// give the console window a nicer title
+	SetConsoleTitle(L"neo-llkh Debug Output");
+	// give the console window a bigger buffer size
+	CONSOLE_SCREEN_BUFFER_INFO csbi;
+	if (GetConsoleScreenBufferInfo(consoleHandle, &csbi)) {
+		COORD bufferSize;
+		bufferSize.X = csbi.dwSize.X;
+		bufferSize.Y = 9999;
+		SetConsoleScreenBufferSize(consoleHandle, bufferSize);
+	}
+}
 
 BOOL WINAPI CtrlHandler(DWORD fdwCtrlType)
 {
@@ -154,12 +194,19 @@ void initLayout()
 		wcscpy(mappingTableLevel1 + 30, L"haeiudtrnsf");
 		wcscpy(mappingTableLevel1 + 44, L"xqäüöbpwmj");
 
-	} else if (strcmp(layout, "kou") == 0) {
-		wcscpy(mappingTableLevel1 + 16, L"k.ouäqgclfj´");
-		wcscpy(mappingTableLevel1 + 30, L"haeiybtrnsß");
-		wcscpy(mappingTableLevel1 + 44, L"zx,üöpdwmv");
+	} else if (strcmp(layout, "kou") == 0
+				|| strcmp(layout, "vou") == 0) {
+		if (strcmp(layout, "kou") == 0) {
+			wcscpy(mappingTableLevel1 + 16, L"k.ouäqgclfj´");
+			wcscpy(mappingTableLevel1 + 30, L"haeiybtrnsß");
+			wcscpy(mappingTableLevel1 + 44, L"zx,üöpdwmv");
+		} else {  // vou
+			wcscpy(mappingTableLevel1 + 16, L"v.ouäqglhfj´");
+			wcscpy(mappingTableLevel1 + 30, L"caeiybtrnsß");
+			wcscpy(mappingTableLevel1 + 44, L"zx,üöpdwmk");
+		}
 
-		wcscpy(mappingTableLevel3 + 16, L"@%{}^•<>=&€̷");
+		wcscpy(mappingTableLevel3 + 16, L"@%{}^!<>=&€̷");
 		wcscpy(mappingTableLevel3 + 30, L"|`()*?/:-_→");
 		wcscpy(mappingTableLevel3 + 44, L"#[]~$+\"'\\;");
 
@@ -180,10 +227,7 @@ void initLayout()
 
 	// map letters of level 2
 	TCHAR * charsLevel2;
-	if (strcmp(layout, "kou") == 0)
-		charsLevel2 = L"ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÜẞ!–";
-	else
-		charsLevel2 = L"ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÜẞ•–";
+	charsLevel2 = L"ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÜẞ•–";
 	mapLevels_2_5_6(mappingTableLevel2, charsLevel2);
 
 	if (supportLevels5and6) {
@@ -338,14 +382,14 @@ bool handleLayer3SpecialCases(KBDLLHOOKSTRUCT keyInfo)
 			sendChar(L'̷', keyInfo);  // bar (diakritischer Schrägstrich)
 			return true;
 		case 31:
-			if (strcmp(layout, "kou") == 0) {
+			if (strcmp(layout, "kou") == 0 || strcmp(layout, "vou") == 0) {
 				sendChar(L'`', keyInfo);
 				keybd_event(VK_SPACE, 0, 0, 0);
 				return true;
 			}
 			return false;
 		case 48:
-			if (strcmp(layout, "kou") != 0) {
+			if (strcmp(layout, "kou") != 0 && strcmp(layout, "vou") != 0) {
 				sendChar(L'`', keyInfo);
 				keybd_event(VK_SPACE, 0, 0, 0);
 				return true;
@@ -379,7 +423,7 @@ bool handleLayer4SpecialCases(KBDLLHOOKSTRUCT keyInfo)
 		mappingTable[i] = 0;
 
 	mappingTable[16] = VK_PRIOR;
-	if (strcmp(layout, "kou") == 0) {
+	if (strcmp(layout, "kou") == 0 || strcmp(layout, "vou") == 0) {
 		mappingTable[17] = VK_NEXT;
 		mappingTable[18] = VK_UP;
 		mappingTable[19] = VK_BACK;
@@ -395,7 +439,7 @@ bool handleLayer4SpecialCases(KBDLLHOOKSTRUCT keyInfo)
 	mappingTable[32] = VK_DOWN;
 	mappingTable[33] = VK_RIGHT;
 	mappingTable[34] = VK_END;
-	if (strcmp(layout, "kou") == 0) {
+	if (strcmp(layout, "kou") == 0 || strcmp(layout, "vou") == 0) {
 		mappingTable[44] = VK_INSERT;
 		mappingTable[45] = VK_TAB;
 		mappingTable[46] = VK_RETURN;
@@ -444,14 +488,14 @@ bool isShift(KBDLLHOOKSTRUCT keyInfo)
 
 bool isMod3(KBDLLHOOKSTRUCT keyInfo)
 {
-	return keyInfo.vkCode == VK_CAPITAL
+	return keyInfo.scanCode == scanCodeMod3L
 	    || keyInfo.scanCode == scanCodeMod3R;
 }
 
 bool isMod4(KBDLLHOOKSTRUCT keyInfo)
 {
-	return keyInfo.vkCode == VK_RMENU
-	    || keyInfo.vkCode == VK_OEM_102; // |<> key
+	return keyInfo.scanCode == scanCodeMod4L
+	    || keyInfo.vkCode == VK_RMENU;
 }
 
 bool isSystemKeyPressed()
@@ -473,6 +517,7 @@ bool isLetter(TCHAR key)
 
 void logKeyEvent(char *desc, KBDLLHOOKSTRUCT keyInfo)
 {
+	char vkCodeLetter[4] = {'(', keyInfo.vkCode, ')', 0};
 	char *keyName;
 	switch (keyInfo.vkCode) {
 		case VK_LSHIFT:
@@ -526,6 +571,9 @@ void logKeyEvent(char *desc, KBDLLHOOKSTRUCT keyInfo)
 		case VK_RETURN:
 			keyName = "(Return)";
 			break;
+		case 0x41 ... 0x5A:
+			keyName = vkCodeLetter;
+			break;
 		default:
 			keyName = "";
 			//keyName = MapVirtualKeyA(keyInfo.vkCode, MAPVK_VK_TO_CHAR);
@@ -533,8 +581,9 @@ void logKeyEvent(char *desc, KBDLLHOOKSTRUCT keyInfo)
 	char *shiftLockCapsLockInfo = shiftLockActive ? " [shift lock active]"
 	                              : (capsLockActive ? " [caps lock active]" : "");
 	char *level4LockInfo = level4LockActive ? " [level4 lock active]" : "";
-	printf("%-10s sc %u vk 0x%x 0x%x %d %s%s%s\n", desc, keyInfo.scanCode, keyInfo.vkCode,
-	       keyInfo.flags, keyInfo.dwExtraInfo, keyName, shiftLockCapsLockInfo, level4LockInfo);
+	char *vkPacket = (desc=="injected" && keyInfo.vkCode == VK_PACKET) ? " (VK_PACKET)" : "";
+	printf("%-10s sc %u vk 0x%x 0x%x %d %s%s%s%s\n", desc, keyInfo.scanCode, keyInfo.vkCode,
+	       keyInfo.flags, keyInfo.dwExtraInfo, keyName, shiftLockCapsLockInfo, level4LockInfo, vkPacket);
 }
 
 __declspec(dllexport)
@@ -602,7 +651,15 @@ LRESULT CALLBACK keyevent(int code, WPARAM wparam, LPARAM lparam)
 			if (keyInfo.scanCode == scanCodeMod3R) {
 				level3modRightPressed = false;
 				mod3Pressed = level3modLeftPressed | level3modRightPressed;
-			} else {  // VK_CAPITAL (CapsLock)
+				if (mod3RAsReturn && level3modRightAndNoOtherKeyPressed) {
+					// release Mod3_R
+					keybd_event(keyInfo.vkCode, 0, KEYEVENTF_KEYUP, 0);
+					// send Return
+					keybd_event(VK_RETURN, 0, 0x01, 0);
+					level3modRightAndNoOtherKeyPressed = false;
+					return -1;
+				}
+			} else {  // scanCodeMod3L (CapsLock)
 				level3modLeftPressed = false;
 				mod3Pressed = level3modLeftPressed | level3modRightPressed;
 				if (capsLockAsEscape && level3modLeftAndNoOtherKeyPressed) {
@@ -616,13 +673,20 @@ LRESULT CALLBACK keyevent(int code, WPARAM wparam, LPARAM lparam)
 			}
 			return -1;
 		} else if (isMod4(keyInfo)) {
-			if (keyInfo.vkCode == VK_OEM_102) {
+			if (keyInfo.scanCode == scanCodeMod4L) {
 				level4modLeftPressed = false;
 				if (level4modRightPressed && level4LockEnabled) {
 					level4LockActive = !level4LockActive;
 					printf("Level4 lock %s!\n", level4LockActive ? "activated" : "deactivated");
+				} else if (mod4LAsTab && level4modLeftAndNoOtherKeyPressed) {
+					// release Mod4_L
+					keybd_event(keyInfo.vkCode, 0, KEYEVENTF_KEYUP, 0);
+					// send Tab
+					keybd_event(VK_TAB, 0, 0x01, 0);
+					level4modLeftAndNoOtherKeyPressed = false;
+					return -1;
 				}
-			} else {  // VK_RMENU (AltGr)
+			} else {  // scanCodeMod4R
 				level4modRightPressed = false;
 				if (level4modLeftPressed && level4LockEnabled) {
 					level4LockActive = !level4LockActive;
@@ -672,9 +736,12 @@ LRESULT CALLBACK keyevent(int code, WPARAM wparam, LPARAM lparam)
 	}
 
 	else if (code == HC_ACTION && (wparam == WM_SYSKEYDOWN || wparam == WM_KEYDOWN)) {
-		logKeyEvent("\nkey down", keyInfo);
+        printf("\n");
+		logKeyEvent("key down", keyInfo);
 
 		level3modLeftAndNoOtherKeyPressed = false;
+		level3modRightAndNoOtherKeyPressed = false;
+		level4modLeftAndNoOtherKeyPressed = false;
 
 		// Check also the scan code because AltGr sends VK_LCONTROL with scanCode 541
 		if (keyInfo.vkCode == VK_LCONTROL && keyInfo.scanCode == 29) {
@@ -741,6 +808,8 @@ LRESULT CALLBACK keyevent(int code, WPARAM wparam, LPARAM lparam)
 		} else if (isMod3(keyInfo)) {
 			if (keyInfo.scanCode == scanCodeMod3R) {
 				level3modRightPressed = true;
+				if (mod3RAsReturn)
+					level3modRightAndNoOtherKeyPressed = true;
 			} else {  // VK_CAPITAL (CapsLock)
 				level3modLeftPressed = true;
 				if (capsLockAsEscape)
@@ -749,9 +818,11 @@ LRESULT CALLBACK keyevent(int code, WPARAM wparam, LPARAM lparam)
 			mod3Pressed = level3modLeftPressed | level3modRightPressed;
 			return -1;
 		} else if (isMod4(keyInfo)) {
-			if (keyInfo.vkCode == VK_OEM_102) {
+			if (keyInfo.scanCode == scanCodeMod4L) {
 				level4modLeftPressed = true;
-			} else { // VK_RMENU (AltGr)
+				if (mod4LAsTab)
+					level4modLeftAndNoOtherKeyPressed = true;
+			} else { // scanCodeMod4R
 				level4modRightPressed = true;
 				/* ALTGR triggers two keys: LCONTROL and RMENU
 				   we don't want to have any of those two here effective but return -1 seems
@@ -768,6 +839,8 @@ LRESULT CALLBACK keyevent(int code, WPARAM wparam, LPARAM lparam)
 			return -1;
 		} else if (keyInfo.vkCode >= 0x60 && keyInfo.vkCode <= 0x6F) {
 			// Numeric keypad -> don't remap
+		} else if (level == 1 && keyInfo.vkCode >= 0x30 && keyInfo.vkCode <= 0x39) {
+			// numbers 0 to 9 -> don't remap
 		} else if (!(qwertzForShortcuts && isSystemKeyPressed())) {
 			TCHAR key = mapScanCodeToChar(level, keyInfo.scanCode);
 			if (capsLockActive && (level == 1 || level == 2) && isLetter(key))
@@ -784,6 +857,12 @@ LRESULT CALLBACK keyevent(int code, WPARAM wparam, LPARAM lparam)
 			}
 		}
 	}
+	/* Passes the hook information to the next hook procedure in the current hook chain.
+	 * 1st Parameter hhk - Optional
+	 * 2nd Parameter nCode - The next hook procedure uses this code to determine how to process the hook information.
+	 * 3rd Parameter wParam - The wParam value passed to the current hook procedure.
+	 * 4th Parameter lParam - The lParam value passed to the current hook procedure
+	 */
 	return CallNextHookEx(NULL, code, wparam, lparam);
 }
 
@@ -797,14 +876,29 @@ DWORD WINAPI hookThreadMain(void *user)
 			return 1;
 		}
 	}
-
+	/* Installs an application-defined hook procedure into a hook chain
+	 * 1st Parameter idHook: WH_KEYBOARD_LL - The type of hook procedure to be installed.
+	 * Installs a hook procedure that monitors low-level keyboard input events.
+	 * 2nd Parameter lpfn: LowLevelKeyboardProc - A pointer to the hook procedure.
+	 * 3rd Parameter hMod: hExe - A handle to the DLL containing the hook procedure pointed to by the lpfn parameter.
+	 * 4th Parameter dwThreadId: 0 - the hook procedure is associated with all existing threads running.
+	 * If the function succeeds, the return value is the handle to the hook procedure.
+	 * If the function fails, the return value is NULL.
+	 */
 	keyhook = SetWindowsHookEx(WH_KEYBOARD_LL, keyevent, base, 0);
 
+	/* Message loop retrieves messages from the thread's message queue and dispatches them to the appropriate window procedures.
+	 * For more info http://msdn.microsoft.com/en-us/library/ms644928%28v=VS.85%29.aspx#creating_loop
+	 * Retrieves a message from the calling thread's message queue.
+	 */
 	while (GetMessage(&msg, 0, 0, 0) > 0) {
 		TranslateMessage(&msg);
 		DispatchMessage(&msg);
 	}
 
+	/* To free system resources associated with the hook and removes a hook procedure installed in a hook chain
+	 * Parameter hhk: hKeyHook - A handle to the hook to be removed.
+	 */
 	UnhookWindowsHookEx(keyhook);
 
 	return 0;
@@ -867,6 +961,12 @@ int main(int argc, char *argv[])
 		GetPrivateProfileStringA("Settings", "symmetricalLevel3Modifiers", "0", returnValue, 100, ini);
 		quoteAsMod3R = (strcmp(returnValue, "1") == 0);
 
+		GetPrivateProfileStringA("Settings", "returnKeyAsMod3R", "0", returnValue, 100, ini);
+		returnAsMod3R = (strcmp(returnValue, "1") == 0);
+
+		GetPrivateProfileStringA("Settings", "tabKeyAsMod4L", "0", returnValue, 100, ini);
+		tabAsMod4L = (strcmp(returnValue, "1") == 0);
+
 		GetPrivateProfileStringA("Settings", "capsLockEnabled", "0", returnValue, 100, ini);
 		capsLockEnabled = (strcmp(returnValue, "1") == 0);
 
@@ -891,15 +991,30 @@ int main(int argc, char *argv[])
 		GetPrivateProfileStringA("Settings", "capsLockAsEscape", "0", returnValue, 100, ini);
 		capsLockAsEscape = (strcmp(returnValue, "1") == 0);
 
+		GetPrivateProfileStringA("Settings", "mod3RAsReturn", "0", returnValue, 100, ini);
+		mod3RAsReturn = (strcmp(returnValue, "1") == 0);
+
+		GetPrivateProfileStringA("Settings", "mod4LAsTab", "0", returnValue, 100, ini);
+		mod4LAsTab = (strcmp(returnValue, "1") == 0);
+
+		GetPrivateProfileStringA("Settings", "debugWindow", "0", returnValue, 100, ini);
+		debugWindow = (strcmp(returnValue, "1") == 0);
+
 		if (capsLockEnabled)
 			shiftLockEnabled = false;
 
 		if (swapLeftCtrlLeftAltAndLeftWin)
 			swapLeftCtrlAndLeftAlt = false;
 
+		if (debugWindow)
+			// Open Console Window to see printf output
+			SetStdOutToNewConsole();
+
 		printf("\nEinstellungen aus %s:\n", ini);
 		printf(" Layout: %s\n", layout);
 		printf(" symmetricalLevel3Modifiers: %d\n", quoteAsMod3R);
+		printf(" returnKeyAsMod3R: %d\n", returnAsMod3R);
+		printf(" tabKeyAsMod4L: %d\n", tabAsMod4L);
 		printf(" capsLockEnabled: %d\n", capsLockEnabled);
 		printf(" shiftLockEnabled: %d\n", shiftLockEnabled);
 		printf(" level4LockEnabled: %d\n", level4LockEnabled);
@@ -907,10 +1022,10 @@ int main(int argc, char *argv[])
 		printf(" swapLeftCtrlAndLeftAlt: %d\n", swapLeftCtrlAndLeftAlt);
 		printf(" swapLeftCtrlLeftAltAndLeftWin: %d\n", swapLeftCtrlLeftAltAndLeftWin);
 		printf(" supportLevels5and6: %d\n", supportLevels5and6);
-		printf(" capsLockAsEscape: %d\n\n", capsLockAsEscape);
-
-		//if (argc >= 2)
-		//	printf("Kommandozeilenparameter werden ignoriert, da eine settings.ini gefunden wurde!\n\n");
+		printf(" capsLockAsEscape: %d\n", capsLockAsEscape);
+		printf(" mod3RAsReturn: %d\n", mod3RAsReturn);
+		printf(" mod4LAsTab: %d\n", mod4LAsTab);
+		printf(" debugWindow: %d\n\n", debugWindow);
 
 	} else {
 		printf("\nKeine settings.ini gefunden: %s\n\n", ini);
@@ -927,7 +1042,8 @@ int main(int argc, char *argv[])
 				|| strcmp(argv[i], "adnwzjf") == 0
 				|| strcmp(argv[i], "bone") == 0
 				|| strcmp(argv[i], "koy") == 0
-				|| strcmp(argv[i], "kou") == 0) {
+				|| strcmp(argv[i], "kou") == 0
+				|| strcmp(argv[i], "vou") == 0) {
 				strncpy(layout, argv[i], 100);
 				printf("\n Layout: %s", layout);
 
@@ -941,7 +1057,15 @@ int main(int argc, char *argv[])
 					}
 				}
 
-				if (strcmp(param, "layout") == 0) {
+				if (strcmp(param, "debugWindow") == 0) {
+					bool debugWindowAlreadyStarted = debugWindow;
+					debugWindow = value==NULL ? false : (strcmp(value, "1") == 0);
+					if (debugWindow && !debugWindowAlreadyStarted)
+						// Open Console Window to see printf output
+						SetStdOutToNewConsole();
+					printf("\n debugWindow: %d", debugWindow);
+
+				} else if (strcmp(param, "layout") == 0) {
 					if (value != NULL) {
 						strncpy(layout, value, 100);
 						printf("\n Layout: %s", layout);
@@ -950,6 +1074,14 @@ int main(int argc, char *argv[])
 				} else if (strcmp(param, "symmetricalLevel3Modifiers") == 0) {
 					quoteAsMod3R = value==NULL ? false : (strcmp(value, "1") == 0);
 					printf("\n symmetricalLevel3Modifiers: %d", quoteAsMod3R);
+
+				} else if (strcmp(param, "returnKeyAsMod3R") == 0) {
+					returnAsMod3R = value==NULL ? false : (strcmp(value, "1") == 0);
+					printf("\n returnKeyAsMod3R: %d", returnAsMod3R);
+
+				} else if (strcmp(param, "tabKeyAsMod4L") == 0) {
+					tabAsMod4L = value==NULL ? false : (strcmp(value, "1") == 0);
+					printf("\n tabKeyAsMod4L: %d", tabAsMod4L);
 
 				} else if (strcmp(param, "capsLockEnabled") == 0) {
 					capsLockEnabled = value==NULL ? false : (strcmp(value, "1") == 0);
@@ -983,6 +1115,14 @@ int main(int argc, char *argv[])
 					capsLockAsEscape = value==NULL ? false : (strcmp(value, "1") == 0);
 					printf("\n capsLockAsEscape: %d", capsLockAsEscape);
 
+				} else if (strcmp(param, "mod3RAsReturn") == 0) {
+					mod3RAsReturn = value==NULL ? false : (strcmp(value, "1") == 0);
+					printf("\n mod3RAsReturn: %d", mod3RAsReturn);
+
+				} else if (strcmp(param, "mod4LAsTab") == 0) {
+					mod4LAsTab = value==NULL ? false : (strcmp(value, "1") == 0);
+					printf("\n mod4LAsTab: %d", mod4LAsTab);
+
 				} else {
 					printf("\nUnbekannter Parameter:%s", param);
 				}
@@ -994,8 +1134,17 @@ int main(int argc, char *argv[])
 	printf("\n\n");
 
 	if (quoteAsMod3R)
-		// ä/quote key instead of #/backslash key for the right level 3 modifier
-		scanCodeMod3R = 40;
+		// use ä/quote key instead of #/backslash key as right level 3 modifier
+		scanCodeMod3R = SCANCODE_QUOTE_KEY;
+	else if (returnAsMod3R)
+		// use return key instead of #/backslash as right level 3 modifier
+		// (might be useful for US keyboards because the # key is missing there)
+		scanCodeMod3R = SCANCODE_RETURN_KEY;
+
+	if (tabAsMod4L)
+		// use tab key instead of < key as left level 4 modifier
+		// (might be useful for US keyboards because the < key is missing there)
+		scanCodeMod4L = SCANCODE_TAB_KEY;
 
 	if (swapLeftCtrlAndLeftAlt || swapLeftCtrlLeftAltAndLeftWin)
 		// catch ctrl-c because it will send keydown for ctrl
@@ -1008,16 +1157,32 @@ int main(int argc, char *argv[])
 
 	DWORD tid;
 
+	/* Retrieves a module handle for the specified module.
+	 * parameter is NULL, GetModuleHandle returns a handle to the file used to create the calling process (.exe file).
+	 * If the function succeeds, the return value is a handle to the specified module.
+	 * If the function fails, the return value is NULL.
+	 */
 	HINSTANCE hInstance = GetModuleHandle(NULL);
 	trayicon_init(LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON)), APPNAME);
 	trayicon_add_item(NULL, &toggleBypassMode);
 	trayicon_add_item("Exit", &exitApplication);
 
+	/* CreateThread function Creates a thread to execute within the virtual address space of the calling process.
+	 * 1st Parameter lpThreadAttributes:  NULL - Thread gets a default security descriptor.
+	 * 2nd Parameter dwStackSize:  0  - The new thread uses the default size for the executable.
+	 * 3rd Parameter lpStartAddress:  KeyLogger - A pointer to the application-defined function to be executed by the thread
+	 * 4th Parameter lpParameter:  argv[0] -  A pointer to a variable to be passed to the thread
+	 * 5th Parameter dwCreationFlags: 0 - The thread runs immediately after creation.
+	 * 6th Parameter pThreadId(out parameter): NULL - the thread identifier is not returned
+	 * If the function succeeds, the return value is a handle to the new thread.
+	 */
 	HANDLE thread = CreateThread(0, 0, hookThreadMain, argv[0], 0, &tid);
 
 	MSG msg;
 	while (GetMessage(&msg, NULL, 0, 0) > 0) {
+		// Translates virtual-key messages into character messages.
 		TranslateMessage(&msg);
+		// Dispatches a message to a window procedure.
 		DispatchMessage(&msg);
 	}
 	return 0;
